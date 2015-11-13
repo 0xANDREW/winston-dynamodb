@@ -69,6 +69,17 @@
         region: options.region
       });
     }
+
+    // List of filter functions that process the message and return a 
+    // different table name than the default
+    this.table_filters = options.table_filters ? options.table_filters: [];
+
+    // List of filter functions that, if matched, the log message will be
+    // ignored
+    this.ignore_filters = options.ignore_filters ? options.ignore_filters: [];
+
+    this.json_ts_key = options.json_ts_key;
+
     this.name = "dynamodb";
     this.level = options.level || "info";
     this.db = new AWS.DynamoDB();
@@ -79,9 +90,46 @@
   util.inherits(DynamoDB, winston.Transport);
 
   DynamoDB.prototype.log = function(level, msg, meta, callback) {
+    var table_name = this.tableName;
+    var timestamp = datify(Date.now());
+
+    // Wrap this to catch any JSON parsing exceptions. If an exception is 
+    // thrown in a filter, just log the message normally
+    try {
+
+      // Skip log if matching ignore filter
+      for (var i = 0; i < this.ignore_filters.length; i++){
+        if (this.ignore_filters[i](msg)){
+          return callback(null, 'skipped');
+        }
+      }
+
+      // Run all filter functions and change table name to first matching
+      for (var i = 0; i < this.table_filters.length; i++){
+        var filter = this.table_filters[i];
+
+        if (typeof(filter) == 'function'){
+          var rv = filter(msg);
+
+          if (typeof(rv) == 'string' && rv.length){
+            table_name = rv;
+            break;
+          }
+        }
+      }
+
+      // Extract timestamp from JSON, if specified
+      if (this.json_ts_key){
+        var data = JSON.parse(msg);
+        timestamp = datify(Date.parse(data[this.json_ts_key]));
+      }
+    }
+    catch (e){
+    }
+
     var params;
     params = {
-      TableName: this.tableName,
+      TableName: table_name,
       Item: {
         id: {
           "S": uuid.v4()
@@ -90,7 +138,7 @@
           "S": level
         },
         timestamp: {
-          "S": datify(Date.now())
+          "S": timestamp,
         },
         msg: {
           "S": msg
